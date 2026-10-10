@@ -5,6 +5,10 @@
     ],
     "routes": [
       { "src": "/api/(.*)", "dest": "/api/$1.js" }
-    ]
+      { "src": "/api/fetch", "dest": "/api/fetch.js" },
+      { "src": "/api/search", "dest": "/api/search.js" },
+      { "src": "/api/newest", "dest": "/api/newest.js" },
+      { "src": "/api/views", "dest": "/api/views.js" },
+      { "src": "/api/rated", "dest": "/api/rated.js" }
   }
   
