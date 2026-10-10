@@ -1,115 +1,86 @@
 // ============================================
-// newest.js — Client-side "Newest" sort helper
-// ============================================
-// Karena proxy ScriptBlox abaikan parameter sortBy,
-// kita fetch dari /api/fetch dan sort di client.
+// /api/newest
+// Fetch multiple pages from ScriptBlox, sort by createdAt desc
 // ============================================
 
-const API = 'https://scriptblox-proxy-pzq8.vercel.app';
+const SCRIPTBLOX_API = 'https://scriptblox.com/api';
+const MAX_PAGES = 3;
+const DELAY_MS = 1200;
 
-// Rate limit: 1 request/detik. Delay antar request.
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-let lastReq = 0;
 
-async function rateLimitedFetch(url, signal) {
-  const wait = 1200 - (Date.now() - lastReq);
-  if (wait > 0) await sleep(wait);
-  lastReq = Date.now();
+async function fetchPage(page) {
+  const url = `${SCRIPTBLOX_API}/script/fetch?page=${page}&max=20&mode=free`;
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0',
+      'Accept': 'application/json'
+    }
+  });
+  if (!res.ok) throw new Error(`ScriptBlox HTTP ${res.status}`);
+  const data = await res.json();
+  return data.result?.scripts || data.scripts || [];
+}
 
-  const ac = new AbortController();
-  const to = setTimeout(() => ac.abort(), 10000);
-  if (signal) signal.addEventListener('abort', () => ac.abort());
+export default async function handler(req, res) {
+  // CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
   try {
-    const res = await fetch(url, { signal: ac.signal });
-    if (res.status === 429) {
-      await sleep(5000);
-      throw new Error('Rate limited');
-    }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(to);
-  }
-}
+    const pageCount = Math.min(
+      parseInt(req.query.pages) || MAX_PAGES,
+      10
+    );
 
-// ============================================
-// Fetch 1 halaman, return array script
-// ============================================
-async function fetchPage(page, signal) {
-  const url = `${API}/api/fetch?page=${page}&mode=free`;
-  const data = await rateLimitedFetch(url, signal);
-  const r = data.result || data;
-  return r.scripts || [];
-}
+    const all = [];
+    const seen = new Set();
 
-// ============================================
-// Fetch multiple pages, deduplicate
-// ============================================
-async function fetchMultiplePages(pageCount = 3, signal) {
-  const all = [];
-  const seen = new Set();
+    for (let p = 1; p <= pageCount; p++) {
+      try {
+        const list = await fetchPage(p);
+        if (!list.length) break;
 
-  for (let p = 1; p <= pageCount; p++) {
-    if (signal && signal.aborted) throw new Error('cancelled');
-    try {
-      const list = await fetchPage(p, signal);
-      if (!list.length) break; // no more data
-
-      for (const s of list) {
-        const id = s._id || s.slug;
-        if (!seen.has(id)) {
-          seen.add(id);
-          all.push(s);
+        for (const s of list) {
+          const id = s._id || s.slug;
+          if (!seen.has(id)) {
+            seen.add(id);
+            all.push(s);
+          }
         }
+      } catch (e) {
+        console.warn(`Page ${p} failed:`, e.message);
+        break;
       }
-    } catch (e) {
-      if (e.name === 'AbortError') throw e;
-      // Partial results better than nothing
-      console.warn(`newest.js: page ${p} failed`, e.message);
-      break;
+
+      if (p < pageCount) await sleep(DELAY_MS);
     }
+
+    // Sort by createdAt desc (newest first)
+    all.sort((a, b) => {
+      const da = new Date(a.createdAt || 0).getTime();
+      const db = new Date(b.createdAt || 0).getTime();
+      return db - da;
+    });
+
+    return res.status(200).json({
+      result: {
+        totalPages: 1,
+        nextPage: null,
+        max: all.length,
+        scripts: all
+      }
+    });
+  } catch (e) {
+    console.error('newest.js error:', e);
+    return res.status(500).json({
+      error: 'Failed to fetch newest scripts',
+      message: e.message
+    });
   }
-
-  return all;
-}
-
-// ============================================
-// Sort by createdAt descending (newest first)
-// ============================================
-function sortByNewest(scripts) {
-  return [...scripts].sort((a, b) => {
-    const da = new Date(a.createdAt || 0).getTime();
-    const db = new Date(b.createdAt || 0).getTime();
-    return db - da;
-  });
-}
-
-// ============================================
-// MAIN: getNewestScripts
-// ============================================
-// @param {number} pageCount — berapa halaman di-fetch (default 3 = 60 script)
-// @param {AbortSignal} signal — buat cancel
-// @returns {Promise<Array>} — script yang udah di-sort newest
-// ============================================
-export async function getNewestScripts(pageCount = 3, signal) {
-  const all = await fetchMultiplePages(pageCount, signal);
-  return sortByNewest(all);
-}
-
-// ============================================
-// Helper: filter + sort sekaligus
-// ============================================
-export async function getNewestFiltered(filter = 'all', pageCount = 3, signal) {
-  const all = await fetchMultiplePages(pageCount, signal);
-
-  let list = all;
-
-  // Filter
-  if (filter === 'nokey') list = list.filter(x => !x.key);
-  if (filter === 'verified') list = list.filter(x => x.verified);
-  if (filter === 'universal') list = list.filter(x => x.isUniversal);
-
-  // Sort
-  return sortByNewest(list);
 }
